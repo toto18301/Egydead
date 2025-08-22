@@ -3,6 +3,7 @@ package com.example
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
@@ -97,7 +98,7 @@ class ExampleProvider : MainAPI() {
         }
     }
 
-    // ---------- Extract links (using suspend newExtractorLink) ----------
+    // ---------- Extract links (uses suspend newExtractorLink + for-loops) ----------
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -110,50 +111,49 @@ class ExampleProvider : MainAPI() {
         suspend fun push(url: String) {
             if (url.isBlank()) return
             val isM3u8 = url.contains(".m3u8", ignoreCase = true)
-
             val link = newExtractorLink(
                 source = "EgyDead",
                 name = if (isM3u8) "EgyDead HLS" else "EgyDead",
                 url = url,
-                type = null // unknown host type
+                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
             ) {
-                this.referer = data
-                this.isM3u8 = isM3u8
-                this.quality = Qualities.Unknown.value
+                referer = data
+                quality = Qualities.Unknown.value
             }
             callback(link)
             found = true
         }
 
         // 1) Direct <video>/<source> tags
-        doc.select("video[src], video > source[src]").forEach { el ->
+        val direct = doc.select("video[src], video > source[src]")
+        for (el in direct) {
             push(el.absUrl("src"))
         }
 
-        // 2) OG video
-        doc.select("meta[property=og:video][content]").forEach { m ->
+        // 2) Open Graph video meta
+        val og = doc.select("meta[property=og:video][content]")
+        for (m in og) {
             push(m.attr("abs:content"))
         }
 
         // 3) One-hop into iframes
-        doc.select("iframe[src]").forEach { iframe ->
+        val iframes = doc.select("iframe[src]")
+        for (iframe in iframes) {
             val src = iframe.absUrl("src")
             if (src.isNotBlank()) {
                 kotlin.runCatching {
                     val iframeDoc = app.get(src, referer = data).document
-                    iframeDoc.select("video[src], video > source[src]").forEach { el ->
+                    val vids = iframeDoc.select("video[src], video > source[src]")
+                    for (el in vids) {
                         push(el.absUrl("src"))
                     }
-                    iframeDoc.select("meta[property=og:video][content]").forEach { m ->
+                    val og2 = iframeDoc.select("meta[property=og:video][content]")
+                    for (m in og2) {
                         push(m.attr("abs:content"))
                     }
                 }
             }
         }
-
-        return found
-    }
-}
 
         return found
     }
