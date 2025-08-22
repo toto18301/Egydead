@@ -6,15 +6,15 @@ import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
 import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.TvType
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.newEpisode
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.ExtractorLink
 import com.lagradost.cloudstream3.utils.AppUtils
+import com.lagradost.cloudstream3.utils.ExtractorLink   // <-- use utils.ExtractorLink
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -24,7 +24,6 @@ class ExampleProvider : MainAPI() {
     override var lang = "ar"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // show sections on the app home
     override val hasMainPage = true
 
     private fun Element.absPoster(): String? =
@@ -114,7 +113,7 @@ class ExampleProvider : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit    // ← uses utils.ExtractorLink
     ): Boolean {
         val doc = app.get(data, referer = mainUrl).document
         var found = false
