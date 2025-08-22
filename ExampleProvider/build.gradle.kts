@@ -2,14 +2,14 @@
 version = 1
 
 // CloudStream plugin metadata
+version = 2
+
 cloudstream {
-    // Optional but helpful metadata
     description = "EgyDead (tv2.egydead.live) source"
     authors = listOf("Toufik Too")
-    status = 1 // 0:Down, 1:Ok, 2:Slow, 3:Beta only
-
-    // What types your provider offers (you can widen later)
+    status = 1                       // 0:Down, 1:Ok, 2:Slow, 3:Beta
     tvTypes = listOf("Movie", "TvSeries")
+    language = "ar"
 }
 
 // Android Gradle Plugin 8.x requires a namespace per module.
