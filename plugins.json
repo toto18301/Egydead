@@ -1,0 +1,21 @@
+[
+    {
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/toto18301/Egydead",
+        "fileSize": 26567,
+        "status": 1,
+        "language": "ar",
+        "authors": [
+            "Toufik Too"
+        ],
+        "tvTypes": [
+            "Movie",
+            "TvSeries"
+        ],
+        "version": 3,
+        "internalName": "ExampleProvider",
+        "description": "EgyDead (tv2.egydead.live) source",
+        "url": "https://raw.githubusercontent.com/toto18301/Egydead/builds/ExampleProvider.cs3",
+        "name": "ExampleProvider"
+    }
+]

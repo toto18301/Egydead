@@ -1,0 +1,8 @@
+{
+  "name": "Egydead",
+  "description": "EgyDead CloudStream plugins",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/toto18301/Egydead/builds/plugins.json"
+  ]
+}
