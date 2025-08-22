@@ -1,12 +1,13 @@
 package com.example
 
-import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import android.content.Context
+import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
+import com.lagradost.cloudstream3.plugins.Plugin
 
 @CloudstreamPlugin
-class ExamplePlugin : CloudstreamPlugin() {
+class ExamplePlugin : Plugin() {
     override fun load(context: Context) {
-        // Register the provider
+        // Register the provider class below
         registerMainAPI(ExampleProvider())
     }
 }
