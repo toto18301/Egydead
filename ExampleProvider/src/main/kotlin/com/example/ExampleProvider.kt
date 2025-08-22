@@ -2,6 +2,9 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -10,8 +13,6 @@ class ExampleProvider : MainAPI() {
     override var name = "EgyDead"
     override var lang = "ar"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
-
-    // Show sections on the app home
     override val hasMainPage = true
 
     private fun Element.absPoster(): String? =
@@ -96,28 +97,30 @@ class ExampleProvider : MainAPI() {
         }
     }
 
-    // ---------- Extract links (no deprecated constructor) ----------
+    // ---------- Extract links (using suspend newExtractorLink) ----------
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (com.lagradost.cloudstream3.utils.ExtractorLink) -> Unit
+        callback: (ExtractorLink) -> Unit
     ): Boolean {
         val doc = app.get(data, referer = mainUrl).document
         var found = false
 
-        fun push(url: String) {
+        suspend fun push(url: String) {
             if (url.isBlank()) return
-            val isM3u8 = url.contains(".m3u8")
-            // Use the new builder helper to avoid deprecated constructor
-            val link = com.lagradost.cloudstream3.utils.newExtractorLink(
-                /* source  = */ "EgyDead",
-                /* name    = */ if (isM3u8) "EgyDead HLS" else "EgyDead",
-                /* url     = */ url,
-                /* referer = */ data,
-                /* quality = */ com.lagradost.cloudstream3.utils.Qualities.Unknown.value,
-                /* isM3u8  = */ isM3u8
-            )
+            val isM3u8 = url.contains(".m3u8", ignoreCase = true)
+
+            val link = newExtractorLink(
+                source = "EgyDead",
+                name = if (isM3u8) "EgyDead HLS" else "EgyDead",
+                url = url,
+                type = null // unknown host type
+            ) {
+                this.referer = data
+                this.isM3u8 = isM3u8
+                this.quality = Qualities.Unknown.value
+            }
             callback(link)
             found = true
         }
@@ -147,6 +150,10 @@ class ExampleProvider : MainAPI() {
                 }
             }
         }
+
+        return found
+    }
+}
 
         return found
     }
