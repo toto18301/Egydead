@@ -2,15 +2,13 @@
 version = 2
 
 cloudstream {
-    name = "EgyDead"                         // ← this is what the app shows
-    description = "EgyDead (tv2.egydead.live) source"
-    authors = listOf("Toufik Too")
-    status = 1                               // 0:Down, 1:Ok, 2:Slow, 3:Beta
-    tvTypes = listOf("Movie", "TvSeries")
-    language = "ar"                          // fixes “Language: No Data”
-    // Optional:
-    // iconUrl = "https://raw.githubusercontent.com/<user>/<repo>/builds/icon.png"
+  description = "EgyDead (tv2.egydead.live) source"
+  authors = listOf("Toufik Too")
+  language = "ar"
+  status = 1
+  tvTypes = listOf("Movie", "TvSeries")
 }
+
 
 android {
     namespace = "com.example"
