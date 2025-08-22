@@ -13,7 +13,7 @@ import com.lagradost.cloudstream3.newHomePageResponse
  */
 class ExampleProvider : MainAPI() {
     override var mainUrl = "https://tv2.egydead.live"
-    override var name = "EgyDead (Stub)"
+    override var name = "EgyDead"
     override val hasMainPage = true
     override var lang = "ar"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
