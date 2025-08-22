@@ -2,8 +2,6 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -98,12 +96,12 @@ class ExampleProvider : MainAPI() {
         }
     }
 
-    // ---------- Extract links WITHOUT loadExtractor helper ----------
+    // ---------- Extract links (no deprecated constructor) ----------
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (com.lagradost.cloudstream3.utils.ExtractorLink) -> Unit
     ): Boolean {
         val doc = app.get(data, referer = mainUrl).document
         var found = false
@@ -111,31 +109,30 @@ class ExampleProvider : MainAPI() {
         fun push(url: String) {
             if (url.isBlank()) return
             val isM3u8 = url.contains(".m3u8")
-            // Use a safe "unknown" quality; CloudStream can still play
-            callback(
-                ExtractorLink(
-                    /* source  = */ "EgyDead",
-                    /* name    = */ if (isM3u8) "EgyDead HLS" else "EgyDead",
-                    /* url     = */ url,
-                    /* referer = */ data,
-                    /* quality = */ Qualities.Unknown.value,
-                    /* isM3u8  = */ isM3u8
-                )
+            // Use the new builder helper to avoid deprecated constructor
+            val link = com.lagradost.cloudstream3.utils.newExtractorLink(
+                /* source  = */ "EgyDead",
+                /* name    = */ if (isM3u8) "EgyDead HLS" else "EgyDead",
+                /* url     = */ url,
+                /* referer = */ data,
+                /* quality = */ com.lagradost.cloudstream3.utils.Qualities.Unknown.value,
+                /* isM3u8  = */ isM3u8
             )
+            callback(link)
             found = true
         }
 
-        // 1) Direct <video> or <source> tags
+        // 1) Direct <video>/<source> tags
         doc.select("video[src], video > source[src]").forEach { el ->
             push(el.absUrl("src"))
         }
 
-        // 2) Open Graph video (sometimes present)
+        // 2) OG video
         doc.select("meta[property=og:video][content]").forEach { m ->
             push(m.attr("abs:content"))
         }
 
-        // 3) If page uses an <iframe>, try fetching that page once and repeat (cheap 1-hop)
+        // 3) One-hop into iframes
         doc.select("iframe[src]").forEach { iframe ->
             val src = iframe.absUrl("src")
             if (src.isNotBlank()) {
