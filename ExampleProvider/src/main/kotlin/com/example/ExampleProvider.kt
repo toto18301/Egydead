@@ -1,20 +1,9 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.HomePageResponse
-import com.lagradost.cloudstream3.MainAPI
-import com.lagradost.cloudstream3.MainPageRequest
-import com.lagradost.cloudstream3.SearchResponse
-import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.newHomePageResponse
-import com.lagradost.cloudstream3.newMovieLoadResponse
-import com.lagradost.cloudstream3.newMovieSearchResponse
-import com.lagradost.cloudstream3.newTvSeriesLoadResponse
-import com.lagradost.cloudstream3.newTvSeriesSearchResponse
-import com.lagradost.cloudstream3.newEpisode
 import com.lagradost.cloudstream3.utils.AppUtils
-import com.lagradost.cloudstream3.utils.ExtractorLink   // <-- use utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -24,6 +13,7 @@ class ExampleProvider : MainAPI() {
     override var lang = "ar"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
+    // show sections on the app home
     override val hasMainPage = true
 
     private fun Element.absPoster(): String? =
@@ -113,24 +103,22 @@ class ExampleProvider : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit    // ← uses utils.ExtractorLink
+        callback: (ExtractorLink) -> Unit
     ): Boolean {
         val doc = app.get(data, referer = mainUrl).document
         var found = false
 
-        // 1) Direct iframes
-        doc.select("iframe[src]").forEach { iframe ->
-            val src = iframe.absUrl("src")
+        fun trySrc(src: String) {
+            if (src.isBlank()) return
+            // Use AppUtils helper from the SDK
             found = AppUtils.loadExtractor(src, data, subtitleCallback, callback) || found
         }
 
+        // 1) Direct iframes
+        doc.select("iframe[src]").forEach { iframe -> trySrc(iframe.absUrl("src")) }
+
         // 2) Sources hidden in data-url attributes
-        doc.select("[data-url]").forEach { el ->
-            val src = el.absUrl("data-url")
-            if (src.isNotBlank()) {
-                found = AppUtils.loadExtractor(src, data, subtitleCallback, callback) || found
-            }
-        }
+        doc.select("[data-url]").forEach { el -> trySrc(el.absUrl("data-url")) }
 
         return found
     }
