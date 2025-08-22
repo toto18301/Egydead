@@ -2,8 +2,6 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.AppUtils
-import com.lagradost.cloudstream3.utils.ExtractorLink
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
 
@@ -13,7 +11,7 @@ class ExampleProvider : MainAPI() {
     override var lang = "ar"
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
 
-    // show sections on the app home
+    // Show sections on the app home
     override val hasMainPage = true
 
     private fun Element.absPoster(): String? =
@@ -103,15 +101,17 @@ class ExampleProvider : MainAPI() {
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
+        callback: (com.lagradost.cloudstream3.utils.ExtractorLink) -> Unit
     ): Boolean {
         val doc = app.get(data, referer = mainUrl).document
         var found = false
 
         fun trySrc(src: String) {
             if (src.isBlank()) return
-            // Use AppUtils helper from the SDK
-            found = AppUtils.loadExtractor(src, data, subtitleCallback, callback) || found
+            // Fully qualified call so it cannot be unresolved
+            found = com.lagradost.cloudstream3.utils.AppUtils.loadExtractor(
+                src, data, subtitleCallback, callback
+            ) || found
         }
 
         // 1) Direct iframes
