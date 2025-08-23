@@ -1,15 +1,11 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.SubtitleFile
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
+import java.util.Base64
 
 class ExampleProvider : MainAPI() {
 
@@ -20,42 +16,39 @@ class ExampleProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
     override val hasMainPage = true
 
-    // ---- Small element helper ----
-    private fun Element.absPoster(): String? =
-        selectFirst("img[src]")?.attr("abs:src")
+    // -------------------- helpers: text / posters --------------------
 
-    // ---- Text-based category guard (Arabic + generic) ----
+    private fun Element.absPoster(): String? =
+        selectFirst("img[src], img[data-src], img[data-lazy-src]")?.let {
+            it.attr("abs:src").ifBlank {
+                it.attr("abs:data-src").ifBlank { it.attr("abs:data-lazy-src") }
+            }
+        }
+
     private fun isCategoryText(text: String?): Boolean {
         if (text.isNullOrBlank()) return false
         val t = text.trim().lowercase()
-
-        // words often used on tiles that are categories, not titles
         val hints = listOf(
-            "مسلسلات", "افلام", "أفلام", "كرتون", "انمي", "أنمي",
+            "مسلسلات", "افلام", "أفلام", "فيلم", "كرتون", "انمي", "أنمي",
             "رمضان", "تركية", "تركي", "أجنبية", "اجنبي", "اسيوية", "آسيوية",
-            "برامج", "وثائقي"
+            "برامج", "وثائقي", "سلاسل", "مميز", "مميزة", "مفضلة"
         )
-        val looksShort = t.length <= 24 // category chips are usually short labels
+        val looksShort = t.length <= 24
         return looksShort && hints.any { t.contains(it) }
     }
 
-    // ---- URL-based junk filter ----
     private fun isJunkLink(href: String, anchorText: String? = null): Boolean {
+        if (!href.startsWith("http")) return true
         if (!href.startsWith(mainUrl)) return true
-
-        // if text clearly looks like a category label, skip
         if (isCategoryText(anchorText)) return true
 
         val normalized = href.removeSuffix("/")
         val path = normalized.removePrefix(mainUrl).lowercase()
-
         if (path.isBlank()) return true
 
-        // simple root sections
         val rootSections = setOf("movies", "series", "anime", "shows")
         if (rootSections.contains(path)) return true
 
-        // obvious non-content paths / navigations
         val badPieces = listOf(
             "category/", "categories/", "tag/", "genre/", "genres",
             "year/", "/page/", "author/", "wp-", "attachment/", "section/",
@@ -63,17 +56,15 @@ class ExampleProvider : MainAPI() {
         )
         if (badPieces.any { path.startsWith(it) || path.contains(it) }) return true
 
-        // Arabic slug for "قسم" (section)
+        // slug for "قسم" (section)
         if (path.contains("%d9%82%d8%b3%d9%85")) return true
 
-        // guard: if only 1 path segment and it contains category-ish words, skip
         val segs = path.split('/').filter { it.isNotBlank() }
         if (segs.size == 1 && isCategoryText(segs.first())) return true
 
         return false
     }
 
-    // ---- Slug → title fallback ----
     private fun slugToTitle(href: String): String =
         href.substringAfterLast('/').substringBeforeLast('.')
             .replace('-', ' ')
@@ -82,28 +73,38 @@ class ExampleProvider : MainAPI() {
             }
             .trim()
 
-    /** Prefer a dedicated watch/server link on a title page.
-     *  Avoid trailer/teaser buttons.
-     */
+    // -------------------- find "watch" link on a title page --------------------
+
     private fun Document.findWatchLink(fallback: String): String {
         val candidates = select(
-            // common "watch/play" buttons
-            "a[href*=/watch], a[href*=/play], a[href*=/player], " +
-                    // Arabic variants on buttons
-                    "a:matchesOwn(مشاهدة|مشاهده|شاهد|سيرفر|تشغيل|Play|Watch)"
-        )
-            .mapNotNull { a -> a.absUrl("href").ifBlank { null } }
+            // “watch / server / play” buttons and links
+            "a[href*=/watch], a[href*=/play], a[href*=/player], a[href*=/server], " +
+            "a:matchesOwn(مشاهدة|مشاهده|شاهد|سيرفر|تشغيل|Play|Watch|Server), " +
+            "button:matchesOwn(مشاهدة|تشغيل|Play)"
+        ).mapNotNull { a -> a.absUrl("href").ifBlank { null } }
             .filterNot { looksLikeTrailer(it) }
             .distinct()
 
         return candidates.firstOrNull() ?: fallback
     }
 
-    /** Find direct media links inside arbitrary HTML. */
+    // -------------------- trailer filter (keep strict to YouTube only) --------------------
+
+    private fun looksLikeTrailer(url: String, contextText: String? = null): Boolean {
+        val t = url.lowercase()
+        // Only treat YouTube as “trailer” by default; do NOT block other hosts blindly
+        if (t.contains("youtube.com") || t.contains("youtu.be")) return true
+        if (contextText != null) {
+            val c = contextText.lowercase()
+            if (c.contains("trailer") || c.contains("teaser") || c.contains("اعلان")) return true
+        }
+        return false
+    }
+
+    // -------------------- media url scraping --------------------
+
     private fun extractMediaUrls(html: String): List<String> {
-        val cleaned = html
-            .replace("\\/", "/")
-            .replace("\\u002F", "/")
+        val cleaned = html.replace("\\/", "/").replace("\\u002F", "/")
 
         val rx = Regex("""https?://[^\s"'<>]+?\.(?:m3u8|mp4)(\?[^\s"'<>]*)?""", RegexOption.IGNORE_CASE)
         val fromRegex = rx.findAll(cleaned).map { it.value }.toMutableList()
@@ -114,18 +115,17 @@ class ExampleProvider : MainAPI() {
         )
         fromRegex += rx2.findAll(cleaned).map { it.groupValues[1] }
 
-        return fromRegex
-            .filterNot { looksLikeTrailer(it) }
-            .distinct()
+        return fromRegex.distinct()
     }
 
-    /** Heuristic to avoid trailers/teasers/YouTube embeds. */
-    private fun looksLikeTrailer(url: String, contextText: String? = null): Boolean {
-        val t = url.lowercase()
-        val bad = listOf("youtube.com", "youtu.be", "trailer", "teaser", "/promo", "/preview", "tmdb", "imdb")
-        if (bad.any { t.contains(it) }) return true
-        if (contextText != null && isCategoryText(contextText)) return true
-        return false
+    private fun maybeDecodeBase64(s: String): String? {
+        val trimmed = s.trim()
+        val base64ish = trimmed.matches(Regex("^[A-Za-z0-9+/=\\r\\n]+$")) && trimmed.length % 4 == 0
+        if (!base64ish) return null
+        return runCatching {
+            val decoded = String(Base64.getDecoder().decode(trimmed))
+            if (decoded.startsWith("http")) decoded else null
+        }.getOrNull()
     }
 
     private suspend fun pushLink(
@@ -133,11 +133,12 @@ class ExampleProvider : MainAPI() {
         mediaUrl: String,
         callback: (ExtractorLink) -> Unit
     ) {
-        val isM3u8 = mediaUrl.contains(".m3u8", true)
+        val url = if (mediaUrl.startsWith("//")) "https:$mediaUrl" else mediaUrl
+        val isM3u8 = url.contains(".m3u8", true)
         val link = newExtractorLink(
             source = "EgyDead",
             name = if (isM3u8) "EgyDead HLS" else "EgyDead",
-            url = mediaUrl,
+            url = url,
             type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
         ) {
             referer = pageUrl
@@ -146,16 +147,17 @@ class ExampleProvider : MainAPI() {
         callback(link)
     }
 
-    // ---- Map anchors → SearchResponse safely ----
+    // -------------------- map an anchor to a SearchResponse --------------------
+
     private suspend fun anchorToItem(a: Element, parentUrl: String): SearchResponse? {
         val href = a.absUrl("href")
         val text = a.attr("title").ifBlank { a.text() }
         if (href.isBlank() || isJunkLink(href, text)) return null
 
         val titleGuess = text.ifBlank { slugToTitle(href) }.trim()
-        val poster = a.closest("article")?.absPoster()
+        val poster = a.closest("article")?.absPoster() ?: a.absPoster()
 
-        // Probe the page to decide movie vs series (fast HEAD/GET)
+        // Probe the page to decide type
         val pDoc = runCatching { app.get(href, referer = parentUrl).document }.getOrNull() ?: return null
         val isSeries = pDoc.select("a:matchesOwn(الحلقة|حلقه|Episode|Ep\\s*\\d+)").isNotEmpty()
 
@@ -166,52 +168,86 @@ class ExampleProvider : MainAPI() {
         }
     }
 
-    // ---- Category page fetcher (used for main page rows) ----
-    private suspend fun listFromCategory(catPath: String, page: Int, title: String): HomePageList {
-        val url = if (page <= 1) "$mainUrl/$catPath/" else "$mainUrl/$catPath/page/$page/"
-        val doc = app.get(url, referer = mainUrl).document
+    // -------------------- section discovery for the Home page --------------------
 
+    /** Return rows from the homepage by pairing each visible heading with its items. */
+    private suspend fun discoverHomeSections(doc: Document): List<HomePageList> {
+        val rows = mutableListOf<HomePageList>()
+
+        // 1) Find all likely headings in DOM order, keeping Arabic/English titles.
+        val headings = doc.select(
+            "h2, h3, .section-title, .widget-title, .block-title, .home-title, .title, .cat-title"
+        ).filter { it.text().isNotBlank() }
+
+        for (h in headings) {
+            val title = h.text().trim()
+            // We *do* want category labels here (these become the row titles)
+            // But we will extract items from the surrounding container, not treat the label as an item.
+
+            // Find a reasonable container near the heading that holds the cards
+            val container = sequenceOf(
+                h.parent(),
+                h.parent()?.parent(),
+                h.parent()?.parent()?.parent()
+            ).firstOrNull { parent ->
+                parent != null && parent.select("article .entry-title a[href], .post .entry-title a[href], .movie-item a[href], .ml-item a[href], .ml-item .title a[href], .item a[href]").size >= 3
+            } ?: continue
+
+            // Gather anchors for items inside this section
+            val anchors = buildList<Element> {
+                addAll(container.select("article .entry-title a[href]"))
+                addAll(container.select(".post .entry-title a[href]"))
+                addAll(container.select(".movie-item a[href], .ml-item a[href], .ml-item .title a[href]"))
+                addAll(container.select(".owl-carousel .item a[href]"))
+            }.distinctBy { it.absUrl("href") }
+
+            val items = anchors.mapNotNull { anchorToItem(it, doc.location()) }.take(30)
+            if (items.size >= 3) {
+                rows += HomePageList(title, items)
+            }
+        }
+
+        // 2) If nothing matched, fall back to two coarse rows (movies/series) so the page isn't empty.
+        if (rows.isEmpty()) {
+            rows += listFromCategoryPath("movies", "أفلام")
+            rows += listFromCategoryPath("series", "مسلسلات")
+        }
+
+        return rows
+    }
+
+    private suspend fun listFromCategoryPath(path: String, rowTitle: String): HomePageList {
+        val url = "$mainUrl/$path/"
+        val doc = app.get(url, referer = mainUrl).document
         val anchors = buildList<Element> {
             addAll(doc.select("article .entry-title a[href]"))
             addAll(doc.select(".post .entry-title a[href]"))
-            addAll(doc.select(".movie-item a[href], .ml-item a[href]"))
+            addAll(doc.select(".movie-item a[href], .ml-item a[href], .ml-item .title a[href]"))
         }.distinctBy { it.absUrl("href") }
-
         val items = anchors.mapNotNull { anchorToItem(it, url) }
-        return HomePageList(title, items)
+        return HomePageList(rowTitle, items)
     }
 
-    // ---------- Main page ----------
+    // -------------------- Main page --------------------
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Define the rows you want to show (categories -> items in each row)
-        val rows = listOf(
-            "أحدث الأفلام" to "movies",
-            "أحدث المسلسلات" to "series"
-        )
-
-        // If user paginates a specific row (right arrow), Cloudstream calls again with the row's title in request.name
-        if (page > 1) {
-            val path = rows.toMap()[request.name] ?: return newHomePageResponse(emptyList(), false)
-            val list = listFromCategory(path, page, request.name)
-            return newHomePageResponse(listOf(list), hasNext = list.list.isNotEmpty())
-        }
-
-        // First page: build all rows
-        val lists = rows.map { (title, path) -> listFromCategory(path, 1, title) }
-        // 'hasNext' here is per-row handled via the request/name mechanism, so false is fine.
+        // For now, we build the first page with discovered sections.
+        // Many “featured” sections don't paginate; Cloudstream handles per-row “more” differently,
+        // so we just return hasNext=false here.
+        val doc = app.get(mainUrl, referer = mainUrl).document
+        val lists = discoverHomeSections(doc)
         return newHomePageResponse(lists, hasNext = false)
     }
 
-    // ---------- Search ----------
+    // -------------------- Search --------------------
+
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/?s=" + URLEncoder.encode(query, "UTF-8")
         val doc = app.get(url, referer = mainUrl).document
 
-        // Prefer entry/title anchors; avoid category chips
         val entryAnchors = doc.select(
-            "article .entry-title a[href], .post .entry-title a[href], .movie-item a[href], .ml-item a[href]"
+            "article .entry-title a[href], .post .entry-title a[href], .movie-item a[href], .ml-item a[href], .ml-item .title a[href]"
         ).ifEmpty {
-            // Safe fallback, still avoids generic category links
             doc.select("a[href*=/watch], a[href*=/episode], a[href][title]")
         }
 
@@ -222,7 +258,7 @@ class ExampleProvider : MainAPI() {
                 if (href.isBlank() || isJunkLink(href, text)) null else href
             }
             .distinct()
-            .take(40)
+            .take(50)
 
         val out = mutableListOf<SearchResponse>()
         for (href in links) {
@@ -248,7 +284,8 @@ class ExampleProvider : MainAPI() {
         return out
     }
 
-    // ---------- Load ----------
+    // -------------------- Load title page --------------------
+
     override suspend fun load(url: String): LoadResponse? {
         val doc = app.get(url, referer = mainUrl).document
 
@@ -259,10 +296,10 @@ class ExampleProvider : MainAPI() {
         val poster = doc.selectFirst("meta[property=og:image], .post img, .entry-content img")
             ?.let { it.attr("content").ifBlank { it.attr("abs:src") } }
 
-        val plot = doc.selectFirst(".entry-content p, .post p")?.text()?.trim()
+        val plot = doc.selectFirst(".entry-content p, .post p, .story p")?.text()?.trim()
         val year = Regex("(19|20)\\d{2}").find(doc.text())?.value?.toIntOrNull()
 
-        val eps = doc.select("a:matchesOwn(الحلقة|حلقه|Episode|Ep\\s*\\d+)")
+        val eps = doc.select("a:matchesOwn(الحلقة|حلقه|Episode|Ep\\s*\\d+), li a:matchesOwn(الحلقة|Episode)")
             .map { a ->
                 val epUrl = a.absUrl("href")
                 val epName = a.text().trim()
@@ -277,7 +314,7 @@ class ExampleProvider : MainAPI() {
                 this.year = year
             }
         } else {
-            // Movie: store the *watch* url so loadLinks can go straight there
+            // For movies, stash the best watch/server page in 'data'
             val watch = doc.findWatchLink(url)
             newMovieLoadResponse(title, url, TvType.Movie, data = watch) {
                 this.posterUrl = poster
@@ -287,83 +324,107 @@ class ExampleProvider : MainAPI() {
         }
     }
 
-    // ---------- Extract links (servers) ----------
+    // -------------------- Collect server candidates from a document --------------------
+
+    private fun collectServerUrls(doc: Document): List<Pair<String, String?>> {
+        val out = mutableListOf<Pair<String, String?>>()
+
+        // 1) iframes (direct and data-src)
+        out += doc.select("iframe[src], iframe[data-src]").mapNotNull { f ->
+            val text = f.text().ifBlank { f.attr("title") }
+            val src = f.attr("abs:src").ifBlank { f.attr("abs:data-src") }
+            if (src.isNotBlank()) (src to text) else null
+        }
+
+        // 2) elements with common data attributes used by server buttons
+        out += doc.select("[data-url], [data-src], [data-iframe], [data-link], [data-href], [data-video], [data-file]").mapNotNull { e ->
+            val label = e.text()
+            val raw = e.attr("abs:data-url")
+                .ifBlank { e.attr("abs:data-src") }
+                .ifBlank { e.attr("abs:data-iframe") }
+                .ifBlank { e.attr("abs:data-link") }
+                .ifBlank { e.attr("abs:data-href") }
+                .ifBlank { e.attr("abs:data-video") }
+                .ifBlank { e.attr("abs:data-file") }
+            if (raw.isBlank()) null
+            else {
+                val decoded = maybeDecodeBase64(raw) ?: raw
+                (decoded to label)
+            }
+        }
+
+        // 3) anchors that look like player/servers
+        val hostHint = Regex("(embed|player|watch|play|server|download|stream|vid|mcloud|moon|uqload|ok\\.ru|streamtape|voe|dood|doodstream|filemoon|vudeo|mixdrop|vidhide|fast)", RegexOption.IGNORE_CASE)
+        out += doc.select("a[href]").mapNotNull { a ->
+            val href = a.absUrl("href")
+            if (href.isBlank() || !hostHint.containsMatchIn(href)) null else (href to a.text())
+        }
+
+        return out.distinctBy { it.first }
+    }
+
+    // -------------------- Load links --------------------
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // data is usually the watch page for movies, or an episode page for series
+        // data is a watch page for movies, or an episode page for series
         val firstDoc = app.get(data, referer = mainUrl).document
 
-        // Prefer a dedicated watch/server page, avoiding trailer links
+        // Prefer a dedicated watch/server page
         var pageUrl = firstDoc.findWatchLink(data)
         var doc = if (pageUrl == data) firstDoc else app.get(pageUrl, referer = data).document
 
         var found = false
 
-        fun Element.frameSrc(): String? {
-            val direct = this.attr("abs:src").ifBlank { null }
-            val dataSrc = this.attr("abs:data-src").ifBlank { null }
-            return direct ?: dataSrc
+        fun tryPushDirect(urls: List<String>) {
+            for (u in urls) {
+                if (u.isBlank()) continue
+                if (looksLikeTrailer(u)) continue
+                found = true
+                pushLink(pageUrl, u, callback)
+            }
         }
 
-        // 1) Try iframes first (actual servers). Skip obvious trailers.
-        val frameCandidates = doc.select("iframe[src], iframe[data-src]")
-            .mapNotNull { it.frameSrc() }
-            .filter { it.isNotBlank() }
-            .filterNot { looksLikeTrailer(it) }
-            .distinct()
-
-        for (src in frameCandidates) {
-            // Try Cloudstream's built-in extractors first
-            val ok = loadExtractor(src, pageUrl, subtitleCallback, callback)
+        // A) Try all server candidates with Cloudstream's extractors first
+        val serverCandidates = collectServerUrls(doc).filterNot { looksLikeTrailer(it.first, it.second) }
+        for ((srv, lbl) in serverCandidates) {
+            val ok = loadExtractor(srv, pageUrl, subtitleCallback, callback)
             if (ok) found = true
-            // If not recognized, try to scrape one level deeper
-            if (!ok) {
-                val iDoc = runCatching { app.get(src, referer = pageUrl).document }.getOrNull()
-                if (iDoc != null) {
-                    // nested frames too
-                    val nested = iDoc.select("iframe[src], iframe[data-src]")
-                        .mapNotNull { it.frameSrc() }
-                        .filterNot { looksLikeTrailer(it) }
-                        .distinct()
-                    for (n in nested) {
-                        val ok2 = loadExtractor(n, src, subtitleCallback, callback)
-                        if (ok2) found = true
-                    }
-                    if (!found) {
-                        // last resort: direct media from nested doc
-                        extractMediaUrls(iDoc.outerHtml()).forEach { pushLink(src, it, callback) }
-                        if (extractMediaUrls(iDoc.outerHtml()).isNotEmpty()) found = true
-                    }
+        }
+
+        // B) If nothing yet, chase one more level deep for each candidate (common pattern)
+        if (!found) {
+            for ((srv, _) in serverCandidates) {
+                val iDoc = runCatching { app.get(srv, referer = pageUrl).document }.getOrNull() ?: continue
+                val nested = collectServerUrls(iDoc).filterNot { looksLikeTrailer(it.first, it.second) }
+                for ((n, _) in nested) {
+                    val ok2 = loadExtractor(n, srv, subtitleCallback, callback)
+                    if (ok2) found = true
+                }
+                if (!found) {
+                    // last resort on nested page: direct urls from HTML
+                    tryPushDirect(extractMediaUrls(iDoc.outerHtml()))
                 }
             }
         }
 
-        // 2) Only if nothing found, try direct <video>/<source> on the page (some sites inline HLS/MP4 for servers)
+        // C) Try direct <video>/<source> on the current page
         if (!found) {
             val directMedia = doc.select("video[src], video > source[src]")
                 .mapNotNull { it.attr("abs:src") }
-                .filterNot { looksLikeTrailer(it) }
                 .distinct()
-            for (u in directMedia) {
-                found = true
-                pushLink(pageUrl, u, callback)
-            }
+            tryPushDirect(directMedia)
         }
 
-        // 3) Absolute last fallback: scan HTML for media urls (skip trailers)
+        // D) Absolute last fallback: scan HTML for media urls
         if (!found) {
-            val scraped = extractMediaUrls(doc.outerHtml())
-            for (u in scraped) {
-                found = true
-                pushLink(pageUrl, u, callback)
-            }
+            tryPushDirect(extractMediaUrls(doc.outerHtml()))
         }
 
         return found
     }
 }
-
