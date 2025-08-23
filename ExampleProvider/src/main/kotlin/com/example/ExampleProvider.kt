@@ -19,57 +19,80 @@ class ExampleProvider : MainAPI() {
     private fun Element.absPoster(): String? =
         selectFirst("img[src]")?.attr("abs:src")
 
-    // ---------- Main page (Latest) ----------
+    // ------------------ MAIN PAGE (best-effort) ------------------
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page <= 1) mainUrl else "$mainUrl/page/$page/"
-        val doc = app.get(url).document
+        val doc = app.get(url, referer = mainUrl).document
 
-        val cards = doc.select("article a[href], .post a[href]").distinctBy { it.absUrl("href") }
+        // Try several common layouts; fall back to generic anchors
+        val cards = buildList {
+            addAll(doc.select("article .entry-title a[href]"))
+            addAll(doc.select("article a[href][title]"))
+            addAll(doc.select(".post a[href][title], .movie-item a[href], .ml-item a[href]"))
+            if (isEmpty()) addAll(doc.select("a[href]"))
+        }.distinctBy { it.absUrl("href") }
+
         val items = cards.mapNotNull { a ->
             val href = a.absUrl("href")
             if (!href.startsWith(mainUrl)) return@mapNotNull null
-            val title = a.attr("title").ifBlank { a.text() }.trim()
-            if (title.isBlank()) return@mapNotNull null
+            if (isJunkLink(href)) return@mapNotNull null
+
+            val titleGuess = a.attr("title").ifBlank { a.text() }.ifBlank { slugToTitle(href) }.trim()
             val poster = a.closest("article")?.absPoster()
 
-            if (title.contains("الحلقة") || title.contains("حلقه", true)) {
-                newTvSeriesSearchResponse(title, href) { this.posterUrl = poster }
-            } else {
-                newMovieSearchResponse(title, href) { this.posterUrl = poster }
-            }
+            // Heuristic: fetch the page once to decide movie vs series
+            val pDoc = kotlin.runCatching { app.get(href, referer = url).document }.getOrNull()
+                ?: return@mapNotNull null
+            val isSeries = pDoc.select("a:matchesOwn(الحلقة|حلقه|Episode|Ep\\s*\\d+)").isNotEmpty()
+
+            if (isSeries)
+                newTvSeriesSearchResponse(titleGuess, href) { this.posterUrl = poster }
+            else
+                newMovieSearchResponse(titleGuess, href) { this.posterUrl = poster }
         }
 
         val hasNext = doc.selectFirst("a.next, .pagination a:matchesOwn(التالي|Next)") != null
         return newHomePageResponse(listOf(HomePageList("Latest", items)), hasNext)
     }
 
-    // ---------- Search ----------
+    // ------------------ SEARCH (robust) ------------------
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/?s=" + URLEncoder.encode(query, "UTF-8")
-        val doc = app.get(url).document
+        val doc = app.get(url, referer = mainUrl).document
 
-        val cards = doc.select("article a[href], .post a[href]").distinctBy { it.absUrl("href") }
-        return cards.mapNotNull { a ->
-            val href = a.absUrl("href")
-            if (!href.startsWith(mainUrl)) return@mapNotNull null
-            val title = a.attr("title").ifBlank { a.text() }.trim()
-            if (title.isBlank()) return@mapNotNull null
-            val poster = a.closest("article")?.absPoster()
+        // Collect many anchors then filter aggressively
+        val links = doc.select("a[href]").map { it.absUrl("href") }
+            .filter { it.startsWith(mainUrl) && !isJunkLink(it) }
+            .distinct()
+            .take(20)
 
-            if (title.contains("الحلقة") || title.contains("حلقه", true)) {
+        val results = mutableListOf<SearchResponse>()
+        for (href in links) {
+            val pDoc = kotlin.runCatching { app.get(href, referer = url).document }.getOrNull() ?: continue
+
+            val title = pDoc.selectFirst("h1, .entry-title, meta[property=og:title]")?.let {
+                it.attr("content").ifBlank { it.text() }
+            }?.trim()?.ifBlank { slugToTitle(href) } ?: continue
+
+            val poster = pDoc.selectFirst("meta[property=og:image], .post img, .entry-content img")
+                ?.let { it.attr("content").ifBlank { it.attr("abs:src") } }
+
+            val isSeries = pDoc.select("a:matchesOwn(الحلقة|حلقه|Episode|Ep\\s*\\d+)").isNotEmpty()
+            results += if (isSeries)
                 newTvSeriesSearchResponse(title, href) { this.posterUrl = poster }
-            } else {
+            else
                 newMovieSearchResponse(title, href) { this.posterUrl = poster }
-            }
         }
+        return results
     }
 
-    // ---------- Load a title page ----------
+    // ------------------ LOAD A TITLE PAGE ------------------
     override suspend fun load(url: String): LoadResponse? {
         val doc = app.get(url, referer = mainUrl).document
 
         val title = doc.selectFirst("h1, .entry-title, meta[property=og:title]")
-            ?.let { it.attr("content").ifBlank { it.text() } }?.trim() ?: return null
+            ?.let { it.attr("content").ifBlank { it.text() } }
+            ?.trim() ?: return null
 
         val poster = doc.selectFirst("meta[property=og:image], .post img, .entry-content img")
             ?.let { it.attr("content").ifBlank { it.attr("abs:src") } }
@@ -81,10 +104,7 @@ class ExampleProvider : MainAPI() {
             val epUrl = a.absUrl("href")
             val epName = a.text().trim()
             val epNum = Regex("(\\d+)").find(epName)?.value?.toIntOrNull()
-            newEpisode(epUrl) {
-                name = epName
-                episode = epNum
-            }
+            newEpisode(epUrl) { name = epName; episode = epNum }
         }
 
         return if (eps.isNotEmpty()) {
@@ -98,7 +118,7 @@ class ExampleProvider : MainAPI() {
         }
     }
 
-    // ---------- Extract links (uses suspend newExtractorLink + for-loops) ----------
+    // ------------------ EXTRACT LINKS ------------------
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -124,37 +144,37 @@ class ExampleProvider : MainAPI() {
             found = true
         }
 
-        // 1) Direct <video>/<source> tags
-        val direct = doc.select("video[src], video > source[src]")
-        for (el in direct) {
+        // direct video tags
+        for (el in doc.select("video[src], video > source[src]")) {
             push(el.absUrl("src"))
         }
-
-        // 2) Open Graph video meta
-        val og = doc.select("meta[property=og:video][content]")
-        for (m in og) {
+        // og:video
+        for (m in doc.select("meta[property=og:video][content]")) {
             push(m.attr("abs:content"))
         }
-
-        // 3) One-hop into iframes
-        val iframes = doc.select("iframe[src]")
-        for (iframe in iframes) {
+        // 1 hop iframes
+        for (iframe in doc.select("iframe[src]")) {
             val src = iframe.absUrl("src")
-            if (src.isNotBlank()) {
-                kotlin.runCatching {
-                    val iframeDoc = app.get(src, referer = data).document
-                    val vids = iframeDoc.select("video[src], video > source[src]")
-                    for (el in vids) {
-                        push(el.absUrl("src"))
-                    }
-                    val og2 = iframeDoc.select("meta[property=og:video][content]")
-                    for (m in og2) {
-                        push(m.attr("abs:content"))
-                    }
-                }
+            if (src.isBlank()) continue
+            kotlin.runCatching {
+                val iDoc = app.get(src, referer = data).document
+                for (el in iDoc.select("video[src], video > source[src]")) push(el.absUrl("src"))
+                for (m in iDoc.select("meta[property=og:video][content]")) push(m.attr("abs:content"))
             }
         }
-
         return found
     }
-}
+
+    // ------------------ helpers ------------------
+    private fun isJunkLink(href: String): Boolean {
+        val bad = listOf("/category/", "/tag/", "/genre", "/genres", "/year/", "/page/",
+            "/feed", "/author/", "/wp-", "/attachment/")
+        return bad.any { href.contains(it) }
+    }
+
+    private fun slugToTitle(href: String): String =
+        href.substringAfterLast('/').substringBeforeLast('.')
+            .replace('-', ' ')
+            .replace(Regex("%[0-9A-Fa-f]{2}")) { runCatching { Char(it.value.substring(1).toInt(16)).toString() }.getOrDefault(" ") }
+            .trim()
+} 
