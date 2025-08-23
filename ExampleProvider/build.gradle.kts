@@ -1,5 +1,5 @@
 // bump this so CloudStream sees an update
-version = 2
+version = 3
 
 cloudstream {
   description = "EgyDead (tv2.egydead.live) source"
