@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.net.URLEncoder
-import java.util.Base64
 
 class ExampleProvider : MainAPI() {
 
@@ -92,7 +91,6 @@ class ExampleProvider : MainAPI() {
 
     private fun looksLikeTrailer(url: String, contextText: String? = null): Boolean {
         val t = url.lowercase()
-        // Only treat YouTube as “trailer” by default; do NOT block other hosts blindly
         if (t.contains("youtube.com") || t.contains("youtu.be")) return true
         if (contextText != null) {
             val c = contextText.lowercase()
@@ -122,9 +120,11 @@ class ExampleProvider : MainAPI() {
         val trimmed = s.trim()
         val base64ish = trimmed.matches(Regex("^[A-Za-z0-9+/=\\r\\n]+$")) && trimmed.length % 4 == 0
         if (!base64ish) return null
+        // Try java.util then android.util as fallback
         return runCatching {
-            val decoded = String(Base64.getDecoder().decode(trimmed))
-            if (decoded.startsWith("http")) decoded else null
+            val jdk = runCatching { String(java.util.Base64.getDecoder().decode(trimmed)) }.getOrNull()
+            val out = jdk ?: String(android.util.Base64.decode(trimmed, android.util.Base64.DEFAULT))
+            if (out.startsWith("http")) out else null
         }.getOrNull()
     }
 
@@ -174,26 +174,27 @@ class ExampleProvider : MainAPI() {
     private suspend fun discoverHomeSections(doc: Document): List<HomePageList> {
         val rows = mutableListOf<HomePageList>()
 
-        // 1) Find all likely headings in DOM order, keeping Arabic/English titles.
+        // 1) Find headings in DOM order.
         val headings = doc.select(
             "h2, h3, .section-title, .widget-title, .block-title, .home-title, .title, .cat-title"
         ).filter { it.text().isNotBlank() }
 
         for (h in headings) {
             val title = h.text().trim()
-            // We *do* want category labels here (these become the row titles)
-            // But we will extract items from the surrounding container, not treat the label as an item.
 
-            // Find a reasonable container near the heading that holds the cards
+            // Find a container near the heading that holds the cards
             val container = sequenceOf(
                 h.parent(),
                 h.parent()?.parent(),
                 h.parent()?.parent()?.parent()
             ).firstOrNull { parent ->
-                parent != null && parent.select("article .entry-title a[href], .post .entry-title a[href], .movie-item a[href], .ml-item a[href], .ml-item .title a[href], .item a[href]").size >= 3
+                parent != null && parent.select(
+                    "article .entry-title a[href], .post .entry-title a[href], " +
+                    ".movie-item a[href], .ml-item a[href], .ml-item .title a[href], .item a[href]"
+                ).size >= 3
             } ?: continue
 
-            // Gather anchors for items inside this section
+            // Collect anchors for items inside this section
             val anchors = buildList<Element> {
                 addAll(container.select("article .entry-title a[href]"))
                 addAll(container.select(".post .entry-title a[href]"))
@@ -201,13 +202,18 @@ class ExampleProvider : MainAPI() {
                 addAll(container.select(".owl-carousel .item a[href]"))
             }.distinctBy { it.absUrl("href") }
 
-            val items = anchors.mapNotNull { anchorToItem(it, doc.location()) }.take(30)
+            val items = mutableListOf<SearchResponse>()
+            for (a in anchors) {
+                val item = anchorToItem(a, doc.location())
+                if (item != null) items += item
+            }
+
             if (items.size >= 3) {
                 rows += HomePageList(title, items)
             }
         }
 
-        // 2) If nothing matched, fall back to two coarse rows (movies/series) so the page isn't empty.
+        // 2) Fallback rows if discovery found nothing
         if (rows.isEmpty()) {
             rows += listFromCategoryPath("movies", "أفلام")
             rows += listFromCategoryPath("series", "مسلسلات")
@@ -224,16 +230,18 @@ class ExampleProvider : MainAPI() {
             addAll(doc.select(".post .entry-title a[href]"))
             addAll(doc.select(".movie-item a[href], .ml-item a[href], .ml-item .title a[href]"))
         }.distinctBy { it.absUrl("href") }
-        val items = anchors.mapNotNull { anchorToItem(it, url) }
+
+        val items = mutableListOf<SearchResponse>()
+        for (a in anchors) {
+            val item = anchorToItem(a, url)
+            if (item != null) items += item
+        }
         return HomePageList(rowTitle, items)
     }
 
     // -------------------- Main page --------------------
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // For now, we build the first page with discovered sections.
-        // Many “featured” sections don't paginate; Cloudstream handles per-row “more” differently,
-        // so we just return hasNext=false here.
         val doc = app.get(mainUrl, referer = mainUrl).document
         val lists = discoverHomeSections(doc)
         return newHomePageResponse(lists, hasNext = false)
@@ -380,7 +388,7 @@ class ExampleProvider : MainAPI() {
 
         var found = false
 
-        fun tryPushDirect(urls: List<String>) {
+        suspend fun tryPushDirect(urls: List<String>) {
             for (u in urls) {
                 if (u.isBlank()) continue
                 if (looksLikeTrailer(u)) continue
@@ -396,7 +404,7 @@ class ExampleProvider : MainAPI() {
             if (ok) found = true
         }
 
-        // B) If nothing yet, chase one more level deep for each candidate (common pattern)
+        // B) If nothing yet, chase one more level deep for each candidate
         if (!found) {
             for ((srv, _) in serverCandidates) {
                 val iDoc = runCatching { app.get(srv, referer = pageUrl).document }.getOrNull() ?: continue
